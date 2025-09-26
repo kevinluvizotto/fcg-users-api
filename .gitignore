@@ -1,0 +1,21 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+bin/
+obj/
+out/
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Test results
+TestResults/
+
+# Others
+*.swp
