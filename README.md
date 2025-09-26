@@ -82,6 +82,8 @@ docker build -t fcg-users-api .
 
 # Rodar container
 docker run -d -p 5192:8080 fcg-users-api
+
+# API Local
 A API ficará disponível em:
 http://localhost:5192
 
