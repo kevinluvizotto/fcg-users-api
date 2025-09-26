@@ -1,28 +1,25 @@
-﻿name: CD - Deploy to Azure App Service (Users API)
+﻿name: CD - Deploy Users API with Docker
 
 on:
   push:
     branches: [ "production" ]
 
 jobs:
-  deploy:
+  docker-build-and-push:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
       with:
-        dotnet-version: 8.0.x
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Publish project
-      run: dotnet publish src/FCG.Users.Api/FCG.Users.Api.csproj -c Release -o ./publish
+    - name: Build Docker image
+      run: docker build -t klztt/fcg-users-api:latest .
 
-    - name: Deploy to Azure WebApp
-      uses: azure/webapps-deploy@v3
-      with:
-        app-name: fcg-users-api-klztt
-        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
-        package: ./publish
+    - name: Push Docker image
+      run: docker push klztt/fcg-users-api:latest
