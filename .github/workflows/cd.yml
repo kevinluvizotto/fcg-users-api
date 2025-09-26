@@ -18,8 +18,12 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Build Docker image
-      run: docker build -t klztt/fcg-users-api:latest .
+    - name: Build Docker image with 2 tags
+      run: |
+        docker build -t klztt/fcg-users-api:latest \
+                     -t klztt/fcg-users-api:${{ github.sha }} .
 
-    - name: Push Docker image
-      run: docker push klztt/fcg-users-api:latest
+    - name: Push Docker image (latest + sha)
+      run: |
+        docker push klztt/fcg-users-api:latest
+        docker push klztt/fcg-users-api:${{ github.sha }}
