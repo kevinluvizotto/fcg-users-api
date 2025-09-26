@@ -1,0 +1,28 @@
+﻿name: CD - Deploy to Azure App Service (Users API)
+
+on:
+  push:
+    branches: [ "production" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Publish project
+      run: dotnet publish src/FCG.Users.Api/FCG.Users.Api.csproj -c Release -o ./publish
+
+    - name: Deploy to Azure WebApp
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: fcg-users-api-klztt   # ⚠️ troque pelo nome do App Service criado no Azure
+        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+        package: ./publish
