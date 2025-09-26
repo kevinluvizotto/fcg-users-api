@@ -23,6 +23,6 @@ jobs:
     - name: Deploy to Azure WebApp
       uses: azure/webapps-deploy@v3
       with:
-        app-name: fcg-users-api-klztt   # ⚠️ troque pelo nome do App Service criado no Azure
+        app-name: fcg-users-api-klztt
         publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
         package: ./publish
