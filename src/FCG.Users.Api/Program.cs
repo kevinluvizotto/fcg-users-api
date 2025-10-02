@@ -15,9 +15,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<UsersDbContext>(opt =>
     opt.UseInMemoryDatabase("UsersDb"));
 
-// JWT config (simples, secret fixo para dev – mova para secrets/env no futuro)
-var jwtSecret = "super_secret_dev_key_1234567890_LONGER_KEY"; // >= 32 chars
-var key = Encoding.ASCII.GetBytes(jwtSecret);
+// JWT config (lendo do appsettings.json)
+var jwtKey = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrEmpty(jwtKey))
+{
+    throw new InvalidOperationException("JWT Key não está configurada no appsettings.json.");
+}
 
 builder.Services.AddAuthentication(options =>
 {
@@ -26,14 +29,15 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = false;
-    options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
-        ValidateIssuer = false,
-        ValidateAudience = false,
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        IssuerSigningKey = new SymmetricSecurityKey(key),
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        ValidAudience = builder.Configuration["Jwt:Audience"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
         ClockSkew = TimeSpan.Zero
     };
 });
@@ -76,7 +80,6 @@ builder.Services.AddSwaggerGen(c =>
             Array.Empty<string>()
         }
     });
-
 });
 
 var app = builder.Build();
@@ -164,17 +167,26 @@ app.MapPost("/login", async (User login, UsersDbContext db) =>
     if (!BCrypt.Net.BCrypt.Verify(login.PasswordHash, user.PasswordHash))
         return Results.Unauthorized();
 
+    var issuer = builder.Configuration["Jwt:Issuer"];
+    var audience = builder.Configuration["Jwt:Audience"];
+    if (string.IsNullOrEmpty(issuer) || string.IsNullOrEmpty(audience))
+    {
+        throw new InvalidOperationException("JWT Issuer ou Audience não está configurado no appsettings.json.");
+    }
+
     var tokenHandler = new JwtSecurityTokenHandler();
     var tokenDescriptor = new SecurityTokenDescriptor
     {
         Subject = new ClaimsIdentity(new[]
         {
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new Claim(ClaimTypes.Email, user.Email)
+            new Claim(ClaimTypes.Email, user.Email),
+            new Claim(JwtRegisteredClaimNames.Iss, issuer),
+            new Claim(JwtRegisteredClaimNames.Aud, audience)
         }),
         Expires = DateTime.UtcNow.AddHours(1),
         SigningCredentials = new SigningCredentials(
-            new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)), SecurityAlgorithms.HmacSha256Signature)
     };
     var token = tokenHandler.CreateToken(tokenDescriptor);
     var jwt = tokenHandler.WriteToken(token);
