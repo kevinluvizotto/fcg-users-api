@@ -18,8 +18,8 @@ Parte do projeto da **Fase 3** (migração para microsserviços).
 ## 📦 Como rodar localmente
 
 ### Pré-requisitos
-- .NET 8 SDK
-- (Opcional) Docker
+- .NET 8 SDK.
+- (Opcional) Docker.
 
 ### Passos
 # Restaurar pacotes e compilar
