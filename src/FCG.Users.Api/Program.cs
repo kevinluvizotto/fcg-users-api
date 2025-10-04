@@ -1,12 +1,12 @@
 ﻿using System.Text;
 using System.Security.Claims;
-using System.IdentityModel.Tokens.Jwt;   // JWT
-using BCrypt.Net;                        // BCrypt
+using System.IdentityModel.Tokens.Jwt;
+using BCrypt.Net;
 using FCG.Users.Domain.Entities;
 using FCG.Users.Infrastructure;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;    // Tokens
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,12 +15,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<UsersDbContext>(opt =>
     opt.UseInMemoryDatabase("UsersDb"));
 
-// JWT config (lendo do appsettings.json)
-var jwtKey = builder.Configuration["Jwt:Key"];
-if (string.IsNullOrEmpty(jwtKey))
-{
-    throw new InvalidOperationException("JWT Key não está configurada no appsettings.json.");
-}
+// JWT config (lendo de variáveis de ambiente)
+var jwtKey = Environment.GetEnvironmentVariable("Jwt__Key") ?? throw new InvalidOperationException("Variável de ambiente Jwt__Key não está configurada.");
+var jwtIssuer = Environment.GetEnvironmentVariable("Jwt__Issuer") ?? throw new InvalidOperationException("Variável de ambiente Jwt__Issuer não está configurada.");
+var jwtAudience = Environment.GetEnvironmentVariable("Jwt__Audience") ?? throw new InvalidOperationException("Variável de ambiente Jwt__Audience não está configurada.");
 
 builder.Services.AddAuthentication(options =>
 {
@@ -35,8 +33,8 @@ builder.Services.AddAuthentication(options =>
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Jwt:Issuer"],
-        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidIssuer = jwtIssuer,
+        ValidAudience = jwtAudience,
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
         ClockSkew = TimeSpan.Zero
     };
@@ -88,7 +86,7 @@ app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "FCG Users API v1");
-    c.RoutePrefix = "swagger"; // acessa em /swagger
+    c.RoutePrefix = "swagger";
 });
 
 app.UseAuthentication();
@@ -167,13 +165,6 @@ app.MapPost("/login", async (User login, UsersDbContext db) =>
     if (!BCrypt.Net.BCrypt.Verify(login.PasswordHash, user.PasswordHash))
         return Results.Unauthorized();
 
-    var issuer = builder.Configuration["Jwt:Issuer"];
-    var audience = builder.Configuration["Jwt:Audience"];
-    if (string.IsNullOrEmpty(issuer) || string.IsNullOrEmpty(audience))
-    {
-        throw new InvalidOperationException("JWT Issuer ou Audience não está configurado no appsettings.json.");
-    }
-
     var tokenHandler = new JwtSecurityTokenHandler();
     var tokenDescriptor = new SecurityTokenDescriptor
     {
@@ -181,8 +172,8 @@ app.MapPost("/login", async (User login, UsersDbContext db) =>
         {
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email),
-            new Claim(JwtRegisteredClaimNames.Iss, issuer),
-            new Claim(JwtRegisteredClaimNames.Aud, audience)
+            new Claim(JwtRegisteredClaimNames.Iss, jwtIssuer),
+            new Claim(JwtRegisteredClaimNames.Aud, jwtAudience)
         }),
         Expires = DateTime.UtcNow.AddHours(1),
         SigningCredentials = new SigningCredentials(
