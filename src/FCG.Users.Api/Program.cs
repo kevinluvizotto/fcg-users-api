@@ -1,188 +1,241 @@
-﻿using System.Text;
-using System.Security.Claims;
-using System.IdentityModel.Tokens.Jwt;
-using BCrypt.Net;
-using FCG.Users.Domain.Entities;
-using FCG.Users.Infrastructure;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using System.Security.Claims;
+using System.Text;
+using System.IdentityModel.Tokens.Jwt;
 
-var builder = WebApplication.CreateBuilder(args);
-
-// EF Core InMemory
-builder.Services.AddDbContext<UsersDbContext>(opt =>
-    opt.UseInMemoryDatabase("UsersDb"));
-
-// JWT config (lendo de variáveis de ambiente)
-var jwtKey = Environment.GetEnvironmentVariable("Jwt__Key") ?? throw new InvalidOperationException("Variável de ambiente Jwt__Key não está configurada.");
-var jwtIssuer = Environment.GetEnvironmentVariable("Jwt__Issuer") ?? throw new InvalidOperationException("Variável de ambiente Jwt__Issuer não está configurada.");
-var jwtAudience = Environment.GetEnvironmentVariable("Jwt__Audience") ?? throw new InvalidOperationException("Variável de ambiente Jwt__Audience não está configurada.");
-
-builder.Services.AddAuthentication(options =>
+namespace FCG.Users.Api
 {
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-})
-.AddJwtBearer(options =>
-{
-    options.TokenValidationParameters = new TokenValidationParameters
+    public enum UserRole
     {
-        ValidateIssuer = true,
-        ValidateAudience = true,
-        ValidateLifetime = true,
-        ValidateIssuerSigningKey = true,
-        ValidIssuer = jwtIssuer,
-        ValidAudience = jwtAudience,
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
-        ClockSkew = TimeSpan.Zero
-    };
-});
+        Admin,
+        User
+    }
 
-builder.Services.AddAuthorization();
-
-// Swagger com suporte a JWT
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new OpenApiInfo
+    public class Program
     {
-        Version = "v1",
-        Title = "FCG Users API",
-        Description = "API para gerenciamento de usuários"
-    });
-
-    var securityScheme = new OpenApiSecurityScheme
-    {
-        Name = "Authorization",
-        Description = "JWT Authorization header usando Bearer.",
-        In = ParameterLocation.Header,
-        Type = SecuritySchemeType.Http,
-        Scheme = "bearer",
-        BearerFormat = "JWT"
-    };
-
-    c.AddSecurityDefinition("Bearer", securityScheme);
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
+        public static void Main(string[] args)
         {
-            new OpenApiSecurityScheme
+            var builder = WebApplication.CreateBuilder(args);
+
+            // Configurar logging
+            builder.Services.AddLogging(logging =>
             {
-                Reference = new OpenApiReference
+                logging.AddConsole();
+                logging.SetMinimumLevel(LogLevel.Debug);
+            });
+
+            // Configurar banco SQL Server
+            var connectionString = builder.Configuration["ConnectionStrings:FCGDatabase"]
+                ?? throw new InvalidOperationException("Connection string 'FCGDatabase' não está configurada.");
+            builder.Services.AddDbContext<UsersDbContext>(options =>
+                options.UseSqlServer(connectionString));
+
+            // Configurar autenticação JWT
+            var jwtKey = builder.Configuration["Jwt:Key"];
+            if (string.IsNullOrEmpty(jwtKey))
+            {
+                throw new InvalidOperationException("JWT Key não está configurada no appsettings.json.");
+            }
+
+            builder.Services.AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+            })
+            .AddJwtBearer(options =>
+            {
+                options.TokenValidationParameters = new TokenValidationParameters
                 {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            Array.Empty<string>()
+                    ValidateIssuer = true,
+                    ValidateAudience = true,
+                    ValidateLifetime = true,
+                    ValidateIssuerSigningKey = true,
+                    ValidIssuer = builder.Configuration["Jwt:Issuer"],
+                    ValidAudience = builder.Configuration["Jwt:Audience"],
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+                    ClockSkew = TimeSpan.Zero
+                };
+                options.Events = new JwtBearerEvents
+                {
+                    OnAuthenticationFailed = context =>
+                    {
+                        Console.WriteLine($"Falha na autenticação: {context.Exception.Message}");
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+
+            // Configurar autorização com políticas
+            builder.Services.AddAuthorization(options =>
+            {
+                options.AddPolicy("AdminOnly", policy => policy.RequireRole(UserRole.Admin.ToString()));
+                options.AddPolicy("UserOrAdmin", policy => policy.RequireRole(UserRole.Admin.ToString(), UserRole.User.ToString()));
+            });
+
+            // Configurar Swagger
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen(c =>
+            {
+                c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                {
+                    In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+                    Description = "Insira o token JWT sem Barear ou Aspas",
+                    Name = "Authorization",
+                    Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+                    Scheme = "bearer",
+                    BearerFormat = "JWT"
+                });
+                c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+                {
+                    {
+                        new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                        {
+                            Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                            {
+                                Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                                Id = "Bearer"
+                            }
+                        },
+                        Array.Empty<string>()
+                    }
+                });
+            });
+
+            var app = builder.Build();
+
+            app.UseSwagger();
+            app.UseSwaggerUI();
+            app.UseAuthentication();
+            app.UseAuthorization();
+
+            // Endpoints
+            app.MapGet("/health", () => "OK");
+
+            app.MapGet("/users", async (UsersDbContext db) =>
+            {
+                var users = await db.Users.ToListAsync();
+                return users.Any() ? Results.Ok(users) : Results.Ok(new List<User>());
+            }).RequireAuthorization("AdminOnly");
+
+            app.MapPost("/users", async (User user, UsersDbContext db) =>
+            {
+                if (!Enum.IsDefined(typeof(UserRole), user.Role))
+                    return Results.BadRequest("Role deve ser 'Admin' ou 'User'.");
+
+                if (await db.Users.AnyAsync(u => u.Email == user.Email))
+                    return Results.BadRequest("Email já cadastrado.");
+
+                user.Id = Guid.NewGuid();
+                db.Users.Add(user);
+                await db.SaveChangesAsync();
+                return Results.Created($"/users/{user.Id}", user);
+            }).RequireAuthorization("AdminOnly");
+
+            app.MapGet("/users/{id}", async (Guid id, UsersDbContext db, HttpContext context) =>
+            {
+                var user = await db.Users.FindAsync(id);
+                if (user == null) return Results.NotFound();
+
+                var currentUserId = context.User.FindFirst("nameid")?.Value;
+                if (user.Role != UserRole.Admin.ToString() && currentUserId != user.Id.ToString())
+                    return Results.Forbid();
+
+                return Results.Ok(user);
+            }).RequireAuthorization("UserOrAdmin");
+
+            app.MapPut("/users/{id}", async (Guid id, User updatedUser, UsersDbContext db, HttpContext context) =>
+            {
+                var user = await db.Users.FindAsync(id);
+                if (user == null) return Results.NotFound();
+
+                var currentUserId = context.User.FindFirst("nameid")?.Value;
+                if (user.Role != UserRole.Admin.ToString() && currentUserId != user.Id.ToString())
+                    return Results.Forbid();
+
+                user.Name = updatedUser.Name;
+                user.Email = updatedUser.Email;
+                user.PasswordHash = updatedUser.PasswordHash;
+                if (Enum.IsDefined(typeof(UserRole), updatedUser.Role))
+                    user.Role = updatedUser.Role;
+                else
+                    return Results.BadRequest("Role deve ser 'Admin' ou 'User'.");
+
+                await db.SaveChangesAsync();
+                return Results.NoContent();
+            }).RequireAuthorization("UserOrAdmin");
+
+            app.MapDelete("/users/{id}", async (Guid id, UsersDbContext db) =>
+            {
+                var user = await db.Users.FindAsync(id);
+                if (user == null) return Results.NotFound();
+
+                db.Users.Remove(user);
+                await db.SaveChangesAsync();
+                return Results.NoContent();
+            }).RequireAuthorization("AdminOnly");
+
+            app.MapPost("/login", async (UserLogin login, UsersDbContext db) =>
+            {
+                var user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.Email && u.PasswordHash == login.PasswordHash);
+                if (user == null) return Results.Unauthorized();
+
+                var issuer = builder.Configuration["Jwt:Issuer"] ?? throw new InvalidOperationException("JWT Issuer não está configurado.");
+                var audience = builder.Configuration["Jwt:Audience"] ?? throw new InvalidOperationException("JWT Audience não está configurado.");
+                var token = GenerateJwtToken(user, jwtKey, issuer, audience);
+                return Results.Ok(new { token });
+            });
+
+            app.Run();
         }
-    });
-});
 
-var app = builder.Build();
-
-app.UseSwagger();
-app.UseSwaggerUI(c =>
-{
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "FCG Users API v1");
-    c.RoutePrefix = "swagger";
-});
-
-app.UseAuthentication();
-app.UseAuthorization();
-
-// Health
-app.MapGet("/health", () => Results.Ok("FCG.Users.Api is healthy 🚀"));
-
-// ---------------- USERS CRUD ---------------- //
-
-// GET /users (apenas autenticado)
-app.MapGet("/users", async (UsersDbContext db) =>
-    await db.Users.ToListAsync())
-    .RequireAuthorization();
-
-// GET /users/{id}
-app.MapGet("/users/{id}", async (Guid id, UsersDbContext db) =>
-    await db.Users.FindAsync(id) is User user
-        ? Results.Ok(user)
-        : Results.NotFound())
-    .RequireAuthorization();
-
-// POST /users (cadastro com hash) - público
-app.MapPost("/users", async (User inputUser, UsersDbContext db) =>
-{
-    if (await db.Users.AnyAsync(u => u.Email == inputUser.Email))
-        return Results.BadRequest("Email já cadastrado.");
-
-    var user = new User
-    {
-        Name = inputUser.Name,
-        Email = inputUser.Email,
-        PasswordHash = BCrypt.Net.BCrypt.HashPassword(inputUser.PasswordHash)
-    };
-
-    db.Users.Add(user);
-    await db.SaveChangesAsync();
-    return Results.Created($"/users/{user.Id}", user);
-}).AllowAnonymous();
-
-// PUT /users/{id}
-app.MapPut("/users/{id}", async (Guid id, User inputUser, UsersDbContext db) =>
-{
-    var user = await db.Users.FindAsync(id);
-    if (user is null) return Results.NotFound();
-
-    user.Name = inputUser.Name;
-    user.Email = inputUser.Email;
-
-    if (!string.IsNullOrWhiteSpace(inputUser.PasswordHash))
-        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(inputUser.PasswordHash);
-
-    await db.SaveChangesAsync();
-    return Results.NoContent();
-}).RequireAuthorization();
-
-// DELETE /users/{id}
-app.MapDelete("/users/{id}", async (Guid id, UsersDbContext db) =>
-{
-    var user = await db.Users.FindAsync(id);
-    if (user is null) return Results.NotFound();
-
-    db.Users.Remove(user);
-    await db.SaveChangesAsync();
-    return Results.NoContent();
-}).RequireAuthorization();
-
-// ---------------- LOGIN ---------------- //
-
-// Público
-app.MapPost("/login", async (User login, UsersDbContext db) =>
-{
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.Email);
-    if (user is null) return Results.Unauthorized();
-
-    if (!BCrypt.Net.BCrypt.Verify(login.PasswordHash, user.PasswordHash))
-        return Results.Unauthorized();
-
-    var tokenHandler = new JwtSecurityTokenHandler();
-    var tokenDescriptor = new SecurityTokenDescriptor
-    {
-        Subject = new ClaimsIdentity(new[]
+        private static string GenerateJwtToken(User user, string key, string issuer, string audience)
         {
-            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new Claim(ClaimTypes.Email, user.Email),
-            new Claim(JwtRegisteredClaimNames.Iss, jwtIssuer),
-            new Claim(JwtRegisteredClaimNames.Aud, jwtAudience)
-        }),
-        Expires = DateTime.UtcNow.AddHours(1),
-        SigningCredentials = new SigningCredentials(
-            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)), SecurityAlgorithms.HmacSha256Signature)
-    };
-    var token = tokenHandler.CreateToken(tokenDescriptor);
-    var jwt = tokenHandler.WriteToken(token);
+            var claims = new[]
+            {
+                new Claim("nameid", user.Id.ToString()),
+                new Claim("email", user.Email),
+                new Claim(ClaimTypes.Role, user.Role)
+            };
 
-    return Results.Ok(new { token = jwt });
-}).AllowAnonymous();
+            var keyBytes = Encoding.UTF8.GetBytes(key);
+            var signingCredentials = new SigningCredentials(new SymmetricSecurityKey(keyBytes), SecurityAlgorithms.HmacSha256);
+            var token = new JwtSecurityToken(
+                issuer: issuer,
+                audience: audience,
+                claims: claims,
+                expires: DateTime.UtcNow.AddHours(1),
+                signingCredentials: signingCredentials);
 
-app.Run();
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+    }
+
+    public class User
+    {
+        public Guid Id { get; set; }
+        public required string Name { get; set; }
+        public required string Email { get; set; }
+        public required string PasswordHash { get; set; }
+        public required string Role { get; set; }
+    }
+
+    public class UserLogin
+    {
+        public required string Email { get; set; }
+        public required string PasswordHash { get; set; }
+    }
+
+    public class UsersDbContext : DbContext
+    {
+        public UsersDbContext(DbContextOptions<UsersDbContext> options)
+            : base(options)
+        {
+        }
+
+        public DbSet<User> Users { get; set; }
+    }
+}
