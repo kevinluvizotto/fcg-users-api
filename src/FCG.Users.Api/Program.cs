@@ -21,25 +21,23 @@ namespace FCG.Users.Api
         {
             var builder = WebApplication.CreateBuilder(args);
 
-            // Configurar logging
+            // 🪵 Logging
             builder.Services.AddLogging(logging =>
             {
                 logging.AddConsole();
                 logging.SetMinimumLevel(LogLevel.Debug);
             });
 
-            // Configurar banco SQL Server
+            // 💾 Banco de Dados
             var connectionString = builder.Configuration["ConnectionStrings:FCGDatabase"]
                 ?? throw new InvalidOperationException("Connection string 'FCGDatabase' não está configurada.");
             builder.Services.AddDbContext<UsersDbContext>(options =>
                 options.UseSqlServer(connectionString));
 
-            // Configurar autenticação JWT
+            // 🔐 JWT
             var jwtKey = builder.Configuration["Jwt:Key"];
             if (string.IsNullOrEmpty(jwtKey))
-            {
                 throw new InvalidOperationException("JWT Key não está configurada no appsettings.json.");
-            }
 
             builder.Services.AddAuthentication(options =>
             {
@@ -69,34 +67,35 @@ namespace FCG.Users.Api
                 };
             });
 
-            // Configurar autorização com políticas
+            // 🛡️ Autorização
             builder.Services.AddAuthorization(options =>
             {
                 options.AddPolicy("AdminOnly", policy => policy.RequireRole(UserRole.Admin.ToString()));
                 options.AddPolicy("UserOrAdmin", policy => policy.RequireRole(UserRole.Admin.ToString(), UserRole.User.ToString()));
             });
 
-            // Configurar Swagger
+            // 📘 Swagger
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen(c =>
             {
-                c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                 {
-                    In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-                    Description = "Insira o token JWT sem Barear ou Aspas",
+                    In = ParameterLocation.Header,
+                    Description = "Insira o token JWT sem Bearer ou aspas.",
                     Name = "Authorization",
-                    Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+                    Type = SecuritySchemeType.Http,
                     Scheme = "bearer",
                     BearerFormat = "JWT"
                 });
-                c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+
+                c.AddSecurityRequirement(new OpenApiSecurityRequirement
                 {
                     {
-                        new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                        new OpenApiSecurityScheme
                         {
-                            Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                            Reference = new OpenApiReference
                             {
-                                Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                                Type = ReferenceType.SecurityScheme,
                                 Id = "Bearer"
                             }
                         },
@@ -112,9 +111,10 @@ namespace FCG.Users.Api
             app.UseAuthentication();
             app.UseAuthorization();
 
-            // Endpoints
+            // 🌡️ Health Check
             app.MapGet("/health", () => "OK");
 
+            // 👥 USERS CRUD
             app.MapGet("/users", async (UsersDbContext db) =>
             {
                 var users = await db.Users.ToListAsync();
@@ -178,6 +178,7 @@ namespace FCG.Users.Api
                 return Results.NoContent();
             }).RequireAuthorization("AdminOnly");
 
+            // 🔑 LOGIN
             app.MapPost("/login", async (UserLogin login, UsersDbContext db) =>
             {
                 var user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.Email && u.PasswordHash == login.PasswordHash);
@@ -189,14 +190,38 @@ namespace FCG.Users.Api
                 return Results.Ok(new { token });
             });
 
+            // 🧩 NOVO ENDPOINT /me
+            app.MapGet("/me", [Authorize] async (HttpContext http, UsersDbContext db) =>
+            {
+                var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userId))
+                    return Results.Unauthorized();
+
+                var user = await db.Users.FindAsync(Guid.Parse(userId));
+                if (user == null)
+                    return Results.NotFound(new { message = "Usuário não encontrado." });
+
+                return Results.Ok(new
+                {
+                    user.Id,
+                    user.Name,
+                    user.Email,
+                    user.Role
+                });
+            })
+            .WithName("GetCurrentUser")
+            .WithTags("Perfil")
+            .RequireAuthorization();
+
             app.Run();
         }
 
+        // 🔧 Geração de Token
         private static string GenerateJwtToken(User user, string key, string issuer, string audience)
         {
             var claims = new[]
             {
-                new Claim("nameid", user.Id.ToString()),
+                new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
                 new Claim("email", user.Email),
                 new Claim(ClaimTypes.Role, user.Role)
             };
@@ -214,6 +239,7 @@ namespace FCG.Users.Api
         }
     }
 
+    // 🧱 ENTIDADES E CONTEXTO
     public class User
     {
         public Guid Id { get; set; }
