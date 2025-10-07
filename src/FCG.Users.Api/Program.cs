@@ -140,7 +140,7 @@ namespace FCG.Users.Api
                 var user = await db.Users.FindAsync(id);
                 if (user == null) return Results.NotFound();
 
-                var currentUserId = context.User.FindFirst("nameid")?.Value;
+                var currentUserId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (user.Role != UserRole.Admin.ToString() && currentUserId != user.Id.ToString())
                     return Results.Forbid();
 
@@ -152,7 +152,7 @@ namespace FCG.Users.Api
                 var user = await db.Users.FindAsync(id);
                 if (user == null) return Results.NotFound();
 
-                var currentUserId = context.User.FindFirst("nameid")?.Value;
+                var currentUserId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (user.Role != UserRole.Admin.ToString() && currentUserId != user.Id.ToString())
                     return Results.Forbid();
 
@@ -190,7 +190,7 @@ namespace FCG.Users.Api
                 return Results.Ok(new { token });
             });
 
-            // 🧩 NOVO ENDPOINT /me
+            // 🧩 ENDPOINT /me
             app.MapGet("/me", [Authorize] async (HttpContext http, UsersDbContext db) =>
             {
                 var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -213,6 +213,30 @@ namespace FCG.Users.Api
             .WithTags("Perfil")
             .RequireAuthorization();
 
+            // 🔒 Trocar senha do usuário autenticado
+            app.MapPut("/me/password", [Authorize] async (HttpContext http, UsersDbContext db, ChangePasswordRequest req) =>
+            {
+                var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userId))
+                    return Results.Unauthorized();
+
+                var user = await db.Users.FindAsync(Guid.Parse(userId));
+                if (user == null)
+                    return Results.NotFound(new { message = "Usuário não encontrado." });
+
+                // Validação simples da senha atual (futura versão: hash)
+                if (user.PasswordHash != req.CurrentPassword)
+                    return Results.BadRequest(new { message = "Senha atual incorreta." });
+
+                user.PasswordHash = req.NewPassword;
+                await db.SaveChangesAsync();
+
+                return Results.Ok(new { message = "Senha alterada com sucesso." });
+            })
+            .WithName("ChangePassword")
+            .WithTags("Perfil")
+            .RequireAuthorization();
+
             app.Run();
         }
 
@@ -222,7 +246,7 @@ namespace FCG.Users.Api
             var claims = new[]
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-                new Claim("email", user.Email),
+                new Claim(ClaimTypes.Email, user.Email),
                 new Claim(ClaimTypes.Role, user.Role)
             };
 
@@ -254,6 +278,8 @@ namespace FCG.Users.Api
         public required string Email { get; set; }
         public required string PasswordHash { get; set; }
     }
+
+    public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
     public class UsersDbContext : DbContext
     {
