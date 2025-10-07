@@ -81,7 +81,7 @@ namespace FCG.Users.Api
                 c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                 {
                     In = ParameterLocation.Header,
-                    Description = "Insira o token JWT sem Bearer ou aspas.",
+                    Description = "Insira o token JWT sem 'Bearer ' ou aspas.",
                     Name = "Authorization",
                     Type = SecuritySchemeType.Http,
                     Scheme = "bearer",
@@ -114,7 +114,7 @@ namespace FCG.Users.Api
             // 🌡️ Health Check
             app.MapGet("/health", () => "OK");
 
-            // 👥 USERS CRUD
+            // 👥 USERS CRUD (apenas Admin)
             app.MapGet("/users", async (UsersDbContext db) =>
             {
                 var users = await db.Users.ToListAsync();
@@ -190,7 +190,30 @@ namespace FCG.Users.Api
                 return Results.Ok(new { token });
             });
 
-            // 🧩 ENDPOINT /me
+            // 🆕 REGISTRO PÚBLICO (Primeiro Acesso)
+            app.MapPost("/register", async (UserRegister newUser, UsersDbContext db) =>
+            {
+                if (await db.Users.AnyAsync(u => u.Email == newUser.Email))
+                    return Results.BadRequest(new { message = "E-mail já cadastrado." });
+
+                var user = new User
+                {
+                    Id = Guid.NewGuid(),
+                    Name = newUser.Name,
+                    Email = newUser.Email,
+                    PasswordHash = newUser.PasswordHash,
+                    Role = UserRole.User.ToString()
+                };
+
+                db.Users.Add(user);
+                await db.SaveChangesAsync();
+
+                return Results.Created($"/users/{user.Id}", new { user.Id, user.Name, user.Email });
+            })
+            .WithName("RegisterUser")
+            .WithTags("Autenticação");
+
+            // 🧩 PERFIL AUTENTICADO
             app.MapGet("/me", [Authorize] async (HttpContext http, UsersDbContext db) =>
             {
                 var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -213,7 +236,7 @@ namespace FCG.Users.Api
             .WithTags("Perfil")
             .RequireAuthorization();
 
-            // 🔒 Trocar senha do usuário autenticado
+            // 🔒 ALTERAR SENHA
             app.MapPut("/me/password", [Authorize] async (HttpContext http, UsersDbContext db, ChangePasswordRequest req) =>
             {
                 var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -224,7 +247,6 @@ namespace FCG.Users.Api
                 if (user == null)
                     return Results.NotFound(new { message = "Usuário não encontrado." });
 
-                // Validação simples da senha atual (futura versão: hash)
                 if (user.PasswordHash != req.CurrentPassword)
                     return Results.BadRequest(new { message = "Senha atual incorreta." });
 
@@ -240,7 +262,7 @@ namespace FCG.Users.Api
             app.Run();
         }
 
-        // 🔧 Geração de Token
+        // 🔧 Geração de Token JWT
         private static string GenerateJwtToken(User user, string key, string issuer, string audience)
         {
             var claims = new[]
@@ -280,6 +302,8 @@ namespace FCG.Users.Api
     }
 
     public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+    public record UserRegister(string Name, string Email, string PasswordHash);
 
     public class UsersDbContext : DbContext
     {
