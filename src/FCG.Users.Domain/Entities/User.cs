@@ -1,13 +1,33 @@
-﻿namespace FCG.Users.Domain.Entities;
-
-public class User
+﻿namespace FCG.Users.Domain.Entities
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
-    public string Name { get; set; } = string.Empty;
-    public string Email { get; set; } = string.Empty;
+    /// <summary>
+    /// Entidade que representa o usuário da plataforma FCG.
+    /// </summary>
+    public class User
+    {
+        /// <summary>
+        /// Identificador único do usuário.
+        /// </summary>
+        public Guid Id { get; set; } = Guid.NewGuid();
 
-    // Salva apenas o hash da senha
-    public string PasswordHash { get; set; } = string.Empty;
+        /// <summary>
+        /// Nome completo do usuário.
+        /// </summary>
+        public string Name { get; set; } = string.Empty;
 
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        /// <summary>
+        /// E-mail utilizado para login e identificação.
+        /// </summary>
+        public string Email { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Hash da senha do usuário (não armazena a senha em texto puro).
+        /// </summary>
+        public string PasswordHash { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Papel (Role) do usuário na aplicação. Pode ser "Admin" ou "User".
+        /// </summary>
+        public string Role { get; set; } = "User";
+    }
 }

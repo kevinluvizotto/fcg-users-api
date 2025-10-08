@@ -6,6 +6,8 @@ using Microsoft.OpenApi.Models;
 using System.Security.Claims;
 using System.Text;
 using System.IdentityModel.Tokens.Jwt;
+using FCG.Users.Infrastructure;
+using FCG.Users.Domain.Entities;
 
 namespace FCG.Users.Api
 {
@@ -31,6 +33,7 @@ namespace FCG.Users.Api
             // 💾 Banco de Dados
             var connectionString = builder.Configuration["ConnectionStrings:FCGDatabase"]
                 ?? throw new InvalidOperationException("Connection string 'FCGDatabase' não está configurada.");
+
             builder.Services.AddDbContext<UsersDbContext>(options =>
                 options.UseSqlServer(connectionString));
 
@@ -57,14 +60,6 @@ namespace FCG.Users.Api
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
                     ClockSkew = TimeSpan.Zero
                 };
-                options.Events = new JwtBearerEvents
-                {
-                    OnAuthenticationFailed = context =>
-                    {
-                        Console.WriteLine($"Falha na autenticação: {context.Exception.Message}");
-                        return Task.CompletedTask;
-                    }
-                };
             });
 
             // 🛡️ Autorização
@@ -81,7 +76,7 @@ namespace FCG.Users.Api
                 c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                 {
                     In = ParameterLocation.Header,
-                    Description = "Insira o token JWT sem 'Bearer ' ou aspas.",
+                    Description = "Insira o token JWT (sem 'Bearer ').",
                     Name = "Authorization",
                     Type = SecuritySchemeType.Http,
                     Scheme = "bearer",
@@ -114,7 +109,7 @@ namespace FCG.Users.Api
             // 🌡️ Health Check
             app.MapGet("/health", () => "OK");
 
-            // 👥 USERS CRUD (apenas Admin)
+            // 👥 USERS CRUD (Admin Only)
             app.MapGet("/users", async (UsersDbContext db) =>
             {
                 var users = await db.Users.ToListAsync();
@@ -123,9 +118,6 @@ namespace FCG.Users.Api
 
             app.MapPost("/users", async (User user, UsersDbContext db) =>
             {
-                if (!Enum.IsDefined(typeof(UserRole), user.Role))
-                    return Results.BadRequest("Role deve ser 'Admin' ou 'User'.");
-
                 if (await db.Users.AnyAsync(u => u.Email == user.Email))
                     return Results.BadRequest("Email já cadastrado.");
 
@@ -135,62 +127,17 @@ namespace FCG.Users.Api
                 return Results.Created($"/users/{user.Id}", user);
             }).RequireAuthorization("AdminOnly");
 
-            app.MapGet("/users/{id}", async (Guid id, UsersDbContext db, HttpContext context) =>
-            {
-                var user = await db.Users.FindAsync(id);
-                if (user == null) return Results.NotFound();
-
-                var currentUserId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (user.Role != UserRole.Admin.ToString() && currentUserId != user.Id.ToString())
-                    return Results.Forbid();
-
-                return Results.Ok(user);
-            }).RequireAuthorization("UserOrAdmin");
-
-            app.MapPut("/users/{id}", async (Guid id, User updatedUser, UsersDbContext db, HttpContext context) =>
-            {
-                var user = await db.Users.FindAsync(id);
-                if (user == null) return Results.NotFound();
-
-                var currentUserId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (user.Role != UserRole.Admin.ToString() && currentUserId != user.Id.ToString())
-                    return Results.Forbid();
-
-                user.Name = updatedUser.Name;
-                user.Email = updatedUser.Email;
-                user.PasswordHash = updatedUser.PasswordHash;
-                if (Enum.IsDefined(typeof(UserRole), updatedUser.Role))
-                    user.Role = updatedUser.Role;
-                else
-                    return Results.BadRequest("Role deve ser 'Admin' ou 'User'.");
-
-                await db.SaveChangesAsync();
-                return Results.NoContent();
-            }).RequireAuthorization("UserOrAdmin");
-
-            app.MapDelete("/users/{id}", async (Guid id, UsersDbContext db) =>
-            {
-                var user = await db.Users.FindAsync(id);
-                if (user == null) return Results.NotFound();
-
-                db.Users.Remove(user);
-                await db.SaveChangesAsync();
-                return Results.NoContent();
-            }).RequireAuthorization("AdminOnly");
-
             // 🔑 LOGIN
-            app.MapPost("/login", async (UserLogin login, UsersDbContext db) =>
+            app.MapPost("/login", async (UserLogin login, UsersDbContext db, IConfiguration config) =>
             {
                 var user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.Email && u.PasswordHash == login.PasswordHash);
                 if (user == null) return Results.Unauthorized();
 
-                var issuer = builder.Configuration["Jwt:Issuer"] ?? throw new InvalidOperationException("JWT Issuer não está configurado.");
-                var audience = builder.Configuration["Jwt:Audience"] ?? throw new InvalidOperationException("JWT Audience não está configurado.");
-                var token = GenerateJwtToken(user, jwtKey, issuer, audience);
+                var token = GenerateJwtToken(user, config);
                 return Results.Ok(new { token });
             });
 
-            // 🆕 REGISTRO PÚBLICO (Primeiro Acesso)
+            // 🆕 REGISTRO
             app.MapPost("/register", async (UserRegister newUser, UsersDbContext db) =>
             {
                 if (await db.Users.AnyAsync(u => u.Email == newUser.Email))
@@ -209,39 +156,28 @@ namespace FCG.Users.Api
                 await db.SaveChangesAsync();
 
                 return Results.Created($"/users/{user.Id}", new { user.Id, user.Name, user.Email });
-            })
-            .WithName("RegisterUser")
-            .WithTags("Autenticação");
+            });
 
             // 🧩 PERFIL AUTENTICADO
             app.MapGet("/me", [Authorize] async (HttpContext http, UsersDbContext db) =>
             {
                 var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userId))
-                    return Results.Unauthorized();
+                    return Results.Json(new { message = "Token inválido." }, statusCode: 401);
 
                 var user = await db.Users.FindAsync(Guid.Parse(userId));
                 if (user == null)
                     return Results.NotFound(new { message = "Usuário não encontrado." });
 
-                return Results.Ok(new
-                {
-                    user.Id,
-                    user.Name,
-                    user.Email,
-                    user.Role
-                });
-            })
-            .WithName("GetCurrentUser")
-            .WithTags("Perfil")
-            .RequireAuthorization();
+                return Results.Ok(new { user.Id, user.Name, user.Email, user.Role });
+            }).RequireAuthorization();
 
             // 🔒 ALTERAR SENHA
             app.MapPut("/me/password", [Authorize] async (HttpContext http, UsersDbContext db, ChangePasswordRequest req) =>
             {
                 var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userId))
-                    return Results.Unauthorized();
+                    return Results.Json(new { message = "Token inválido." }, statusCode: 401);
 
                 var user = await db.Users.FindAsync(Guid.Parse(userId));
                 if (user == null)
@@ -254,17 +190,79 @@ namespace FCG.Users.Api
                 await db.SaveChangesAsync();
 
                 return Results.Ok(new { message = "Senha alterada com sucesso." });
+            }).RequireAuthorization();
+
+            // 🎮 --- NOVO: Biblioteca local (UserGames) ---
+            app.MapGet("/users/me/games", [Authorize] async (HttpContext http, UsersDbContext db) =>
+            {
+                var userIdStr = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdStr))
+                    return Results.Json(new { message = "Token inválido." }, statusCode: 401);
+
+                var userId = Guid.Parse(userIdStr);
+
+                var games = await db.UserGames
+                    .Where(ug => ug.UserId == userId)
+                    .Select(ug => new { ug.GameId })
+                    .ToListAsync();
+
+                return Results.Ok(games);
             })
-            .WithName("ChangePassword")
-            .WithTags("Perfil")
-            .RequireAuthorization();
+            .WithTags("Biblioteca");
+
+            app.MapPost("/users/me/games", [Authorize] async (HttpContext http, UsersDbContext db) =>
+            {
+                var userIdStr = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                var gameIdStr = http.Request.Query["gameId"].ToString();
+
+                if (string.IsNullOrEmpty(userIdStr) || string.IsNullOrEmpty(gameIdStr))
+                    return Results.BadRequest(new { message = "Token ou gameId ausente." });
+
+                if (!Guid.TryParse(gameIdStr, out var gameId))
+                    return Results.BadRequest(new { message = "gameId inválido." });
+
+                var userId = Guid.Parse(userIdStr);
+
+                var alreadyOwned = await db.UserGames.AnyAsync(ug => ug.UserId == userId && ug.GameId == gameId);
+                if (alreadyOwned)
+                    return Results.BadRequest(new { message = "Jogo já adquirido." });
+
+                db.UserGames.Add(new UserGame { UserId = userId, GameId = gameId });
+                await db.SaveChangesAsync();
+
+                return Results.Ok(new { message = "Jogo adicionado à biblioteca." });
+            })
+            .WithTags("Biblioteca");
+
+            app.MapDelete("/users/me/games/{gameId}", [Authorize] async (HttpContext http, Guid gameId, UsersDbContext db) =>
+            {
+                var userIdStr = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdStr))
+                    return Results.Json(new { message = "Token inválido." }, statusCode: 401);
+
+                var userId = Guid.Parse(userIdStr);
+                var userGame = await db.UserGames.FirstOrDefaultAsync(ug => ug.UserId == userId && ug.GameId == gameId);
+
+                if (userGame == null)
+                    return Results.NotFound(new { message = "Jogo não encontrado na biblioteca." });
+
+                db.UserGames.Remove(userGame);
+                await db.SaveChangesAsync();
+
+                return Results.Ok(new { message = "Jogo removido da biblioteca." });
+            })
+            .WithTags("Biblioteca");
 
             app.Run();
         }
 
         // 🔧 Geração de Token JWT
-        private static string GenerateJwtToken(User user, string key, string issuer, string audience)
+        private static string GenerateJwtToken(User user, IConfiguration config)
         {
+            var key = config["Jwt:Key"]!;
+            var issuer = config["Jwt:Issuer"]!;
+            var audience = config["Jwt:Audience"]!;
+
             var claims = new[]
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
@@ -272,46 +270,23 @@ namespace FCG.Users.Api
                 new Claim(ClaimTypes.Role, user.Role)
             };
 
-            var keyBytes = Encoding.UTF8.GetBytes(key);
-            var signingCredentials = new SigningCredentials(new SymmetricSecurityKey(keyBytes), SecurityAlgorithms.HmacSha256);
+            var creds = new SigningCredentials(
+                new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
+                SecurityAlgorithms.HmacSha256);
+
             var token = new JwtSecurityToken(
                 issuer: issuer,
                 audience: audience,
                 claims: claims,
-                expires: DateTime.UtcNow.AddHours(1),
-                signingCredentials: signingCredentials);
+                expires: DateTime.UtcNow.AddHours(2),
+                signingCredentials: creds);
 
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
     }
 
-    // 🧱 ENTIDADES E CONTEXTO
-    public class User
-    {
-        public Guid Id { get; set; }
-        public required string Name { get; set; }
-        public required string Email { get; set; }
-        public required string PasswordHash { get; set; }
-        public required string Role { get; set; }
-    }
-
-    public class UserLogin
-    {
-        public required string Email { get; set; }
-        public required string PasswordHash { get; set; }
-    }
-
+    // 🧱 DTOs auxiliares
     public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
-
     public record UserRegister(string Name, string Email, string PasswordHash);
-
-    public class UsersDbContext : DbContext
-    {
-        public UsersDbContext(DbContextOptions<UsersDbContext> options)
-            : base(options)
-        {
-        }
-
-        public DbSet<User> Users { get; set; }
-    }
+    public record UserLogin(string Email, string PasswordHash);
 }
