@@ -132,30 +132,10 @@ namespace FCG.Users.Api
                 return Results.Created($"/users/{user.Id}", user);
             }).RequireAuthorization("AdminOnly");
 
-            app.MapGet("/users/{id}", async (Guid id, UsersDbContext db) =>
-            {
-                var user = await db.Users.FindAsync(id);
-                return user is not null ? Results.Ok(user) : Results.NotFound();
-            }).RequireAuthorization("UserOrAdmin");
-
-            app.MapPut("/users/{id}", async (Guid id, User updatedUser, UsersDbContext db) =>
-            {
-                var user = await db.Users.FindAsync(id);
-                if (user is null) return Results.NotFound();
-
-                user.Name = updatedUser.Name;
-                user.Email = updatedUser.Email;
-                user.PasswordHash = updatedUser.PasswordHash;
-                user.Role = updatedUser.Role;
-
-                await db.SaveChangesAsync();
-                return Results.NoContent();
-            }).RequireAuthorization("UserOrAdmin");
-
             app.MapDelete("/users/{id}", async (Guid id, UsersDbContext db) =>
             {
                 var user = await db.Users.FindAsync(id);
-                if (user is null) return Results.NotFound();
+                if (user == null) return Results.NotFound();
 
                 db.Users.Remove(user);
                 await db.SaveChangesAsync();
@@ -166,13 +146,14 @@ namespace FCG.Users.Api
             app.MapPost("/login", async (UserLogin login, UsersDbContext db, IConfiguration config) =>
             {
                 var user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.Email && u.PasswordHash == login.PasswordHash);
-                if (user is null) return Results.Unauthorized();
+                if (user == null)
+                    return Results.Unauthorized();
 
                 var token = GenerateJwtToken(user, config);
                 return Results.Ok(new { token });
             });
 
-            // 🆕 REGISTRO PÚBLICO (Primeiro Acesso)
+            // 🆕 REGISTRO PÚBLICO
             app.MapPost("/register", async (UserRegister newUser, UsersDbContext db) =>
             {
                 if (await db.Users.AnyAsync(u => u.Email == newUser.Email))
@@ -192,10 +173,9 @@ namespace FCG.Users.Api
 
                 return Results.Created($"/users/{user.Id}", new { user.Id, user.Name, user.Email });
             })
-            .WithName("RegisterUser")
             .WithTags("Autenticação");
 
-            // 🧩 PERFIL AUTENTICADO
+            // 🧩 PERFIL
             app.MapGet("/me", [Authorize] async (HttpContext http, UsersDbContext db) =>
             {
                 var userId = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -206,15 +186,8 @@ namespace FCG.Users.Api
                 if (user == null)
                     return Results.NotFound(new { message = "Usuário não encontrado." });
 
-                return Results.Ok(new
-                {
-                    user.Id,
-                    user.Name,
-                    user.Email,
-                    user.Role
-                });
+                return Results.Ok(new { user.Id, user.Name, user.Email, user.Role });
             })
-            .WithName("GetCurrentUser")
             .WithTags("Perfil")
             .RequireAuthorization();
 
@@ -237,18 +210,16 @@ namespace FCG.Users.Api
 
                 return Results.Ok(new { message = "Senha alterada com sucesso." });
             })
-            .WithName("ChangePassword")
             .WithTags("Perfil")
             .RequireAuthorization();
 
-            // 🎮 BIBLIOTECA DE JOGOS (proxy para Games API)
-            app.MapGet("/users/me/games", [Authorize] async (IHttpClientFactory httpFactory, HttpContext context, IConfiguration config) =>
+            // 🏪 LOJA DE JOGOS (proxy para Games API)
+            app.MapGet("/store/games", [Authorize] async (IHttpClientFactory httpFactory, HttpContext context, IConfiguration config) =>
             {
                 var token = context.Request.Headers["Authorization"].ToString();
                 if (string.IsNullOrEmpty(token))
                     return Results.Unauthorized();
 
-                // ✅ Agora busca os jogos diretamente da loja (/games), não /me/games
                 var httpClient = httpFactory.CreateClient();
                 var gamesApiUrl = $"{config["GamesApi:BaseUrl"]}/games";
 
@@ -260,54 +231,50 @@ namespace FCG.Users.Api
 
                 return Results.Content(json, "application/json");
             })
-            .WithName("GetMyGames")
+            .WithTags("Loja")
+            .RequireAuthorization();
+
+            // 🎮 BIBLIOTECA DO USUÁRIO
+            app.MapGet("/users/me/games", [Authorize] async (HttpContext context, UsersDbContext db) =>
+            {
+                var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userId))
+                    return Results.Unauthorized();
+
+                var games = await db.UserGames
+                    .Where(ug => ug.UserId == Guid.Parse(userId))
+                    .Select(ug => new { ug.GameId })
+                    .ToListAsync();
+
+                return Results.Ok(games);
+            })
             .WithTags("Biblioteca")
             .RequireAuthorization();
 
-
-            app.MapPost("/users/me/games", [Authorize] async (IHttpClientFactory httpFactory, HttpContext context, IConfiguration config) =>
+            app.MapPost("/users/me/games", [Authorize] async (HttpContext context, UsersDbContext db) =>
             {
-                var token = context.Request.Headers["Authorization"].ToString();
+                var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 var gameId = context.Request.Query["gameId"].ToString();
-                if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(gameId))
+
+                if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(gameId))
                     return Results.BadRequest(new { message = "Token ou gameId ausente." });
 
-                // ✅ Agora o POST também usa /games (não /me/games)
-                var httpClient = httpFactory.CreateClient();
-                var gamesApiUrl = $"{config["GamesApi:BaseUrl"]}/games?gameId={gameId}";
+                var parsedUserId = Guid.Parse(userId);
+                var parsedGameId = Guid.Parse(gameId);
 
-                var request = new HttpRequestMessage(HttpMethod.Post, gamesApiUrl);
-                request.Headers.Add("Authorization", token);
+                var alreadyExists = await db.UserGames.AnyAsync(x => x.UserId == parsedUserId && x.GameId == parsedGameId);
+                if (alreadyExists)
+                    return Results.BadRequest(new { message = "Jogo já adquirido." });
 
-                var response = await httpClient.SendAsync(request);
-                var json = await response.Content.ReadAsStringAsync();
+                db.UserGames.Add(new UserGame
+                {
+                    UserId = parsedUserId,
+                    GameId = parsedGameId
+                });
+                await db.SaveChangesAsync();
 
-                return Results.Content(json, "application/json");
+                return Results.Ok(new { message = "Jogo adicionado à biblioteca." });
             })
-            .WithName("BuyGame")
-            .WithTags("Biblioteca")
-            .RequireAuthorization();
-
-
-            app.MapDelete("/users/me/games/{gameId}", [Authorize] async (IHttpClientFactory httpFactory, HttpContext context, IConfiguration config, Guid gameId) =>
-            {
-                var token = context.Request.Headers["Authorization"].ToString();
-                if (string.IsNullOrEmpty(token))
-                    return Results.BadRequest(new { message = "Token ausente." });
-
-                // Mantém /games/{gameId} (sem /me)
-                var httpClient = httpFactory.CreateClient();
-                var gamesApiUrl = $"{config["GamesApi:BaseUrl"]}/games/{gameId}";
-
-                var request = new HttpRequestMessage(HttpMethod.Delete, gamesApiUrl);
-                request.Headers.Add("Authorization", token);
-
-                var response = await httpClient.SendAsync(request);
-                var json = await response.Content.ReadAsStringAsync();
-
-                return Results.Content(json, "application/json");
-            })
-            .WithName("RemoveGameFromLibrary")
             .WithTags("Biblioteca")
             .RequireAuthorization();
 
@@ -341,7 +308,6 @@ namespace FCG.Users.Api
         }
     }
 
-    // 🧱 ENTIDADES AUXILIARES
     public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
     public record UserRegister(string Name, string Email, string PasswordHash);
     public record UserLogin(string Email, string PasswordHash);
