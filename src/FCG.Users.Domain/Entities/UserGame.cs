@@ -1,8 +1,14 @@
-namespace FCG.Users.Domain.Entities;
+using System;
+using System.Text.Json.Serialization;
 
-public class UserGame
+namespace FCG.Users.Domain.Entities
 {
-    public Guid Id { get; set; } = Guid.NewGuid();
-    public Guid UserId { get; set; }
-    public Guid GameId { get; set; }
+    public class UserGame
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid UserId { get; set; }
+
+        [JsonPropertyName("GameId")]
+        public Guid GameId { get; set; }
+    }
 }
