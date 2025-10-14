@@ -132,6 +132,35 @@ namespace FCG.Users.Api
                 return Results.Created($"/users/{user.Id}", user);
             }).RequireAuthorization("AdminOnly");
 
+            // ✅ Atualizar usuário (somente Admin)
+            app.MapPut("/users/{id}", async (Guid id, User updatedUser, UsersDbContext db, ILogger<Program> logger) =>
+            {
+                try
+                {
+                    var user = await db.Users.FindAsync(id);
+                    if (user is null)
+                        return Results.NotFound(new { message = "Usuário não encontrado." });
+
+                    user.Name = updatedUser.Name;
+                    user.Email = updatedUser.Email;
+
+                    // Atualiza a senha se uma nova foi enviada
+                    if (!string.IsNullOrWhiteSpace(updatedUser.PasswordHash))
+                        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(updatedUser.PasswordHash);
+
+                    user.Role = updatedUser.Role;
+                    await db.SaveChangesAsync();
+
+                    logger.LogInformation("Usuário {UserId} atualizado com sucesso.", id);
+                    return Results.NoContent();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Erro ao atualizar usuário {UserId}.", id);
+                    return Results.Json(new { error = "Erro interno ao atualizar usuário." }, statusCode: 500);
+                }
+            }).RequireAuthorization("AdminOnly");
+
             app.MapDelete("/users/{id}", async (Guid id, UsersDbContext db) =>
             {
                 var user = await db.Users.FindAsync(id);
