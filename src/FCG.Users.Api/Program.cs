@@ -278,6 +278,41 @@ namespace FCG.Users.Api
             .WithTags("Biblioteca")
             .RequireAuthorization();
 
+            // 🗑️ Remover jogo da biblioteca
+            app.MapDelete("/users/me/games/{gameId}", async (Guid gameId, HttpContext http, UsersDbContext db, ILogger<Program> logger) =>
+            {
+                try
+                {
+                    var userId = http.User.Claims.FirstOrDefault(c =>
+                        c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+
+                    if (string.IsNullOrEmpty(userId))
+                        return Results.Unauthorized();
+
+                    logger.LogInformation("🗑️ Removendo jogo {GameId} da biblioteca do usuário {UserId}", gameId, userId);
+
+                    var userGame = await db.UserGames
+                        .FirstOrDefaultAsync(x => x.UserId.ToString() == userId && x.GameId == gameId);
+
+                    if (userGame is null)
+                        return Results.NotFound(new { error = "Jogo não encontrado na biblioteca do usuário." });
+
+                    db.UserGames.Remove(userGame);
+                    await db.SaveChangesAsync();
+
+                    logger.LogInformation("✅ Jogo {GameId} removido da biblioteca do usuário {UserId}", gameId, userId);
+
+                    return Results.Ok(new { message = "Jogo removido da biblioteca com sucesso!" });
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Erro ao remover jogo da biblioteca.");
+                    return Results.Problem("Erro interno ao remover o jogo da biblioteca.");
+                }
+            })
+            .WithTags("Biblioteca")
+            .RequireAuthorization("UserOrAdmin");
+
             app.Run();
         }
 
